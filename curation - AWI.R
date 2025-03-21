@@ -95,7 +95,7 @@ awi$highlvl_SN_OTH[awi$nu_cat %in% c("Unknown AW", "Unknown LE") ] = "Unknown"
 aw_grouped = awi %>%
   group_by(nu_cat) %>% 
   st_make_valid()  %>% 
-  st_first.spatial.curation(., tolerance = 10, tiny.buff = 0.0001, smallest.hole = 100)%>%
+  st_first.spatial.curation(., tolerance = 10, tiny.buff = 0.0001)%>%
   summarize(geometry = st_union(geometry))
 aw_grouped$ha.awi_group = st_area(aw_grouped) %>% set_units("ha")
 
