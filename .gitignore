@@ -11,3 +11,6 @@ AW-extent-exploration_cache
 AW-extent-exploration_files
 figures
 images
+
+/.quarto/
+**/*.quarto_ipynb
