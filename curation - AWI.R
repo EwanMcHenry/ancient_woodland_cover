@@ -105,14 +105,31 @@ awi_grouped_cars <- aw_grouped %>%
 awi_grouped_cars$ha.car_awi_group = st_area(awi_grouped_cars) %>% set_units("ha")
 
 
+
+awi$awi.ha <- st_area(awi) %>% set_units(value = "ha") %>% as.numeric()
+
+# rename countries
+awi <- awi %>%
+  mutate(Country = case_when(
+    Country == "Eng" ~ "England",
+    Country == "Scot" ~ "Scotland",
+    Country == "Wal" ~ "Wales",
+    Country == "NI" ~ "N.Ireland",
+    TRUE ~ "Unknown"
+  ),
+  # set nu_cat as factor and set levels order
+  nu_cat = factor(nu_cat, levels = constants$nucat_levels)
+  )
+
+
 #########
 
-save(awi,file = "ancient woodland\\curated\\awi.RData" )
-save(aw_grouped,file = "ancient woodland\\curated\\aw_grouped.RData" )
-save(awi_grouped_cars,file = "ancient woodland\\curated\\awi_grouped_cars.RData" )
-load("ancient woodland\\curated\\awi_grouped_cars.RData" ) # awi_grouped_cars
+save(awi,file = paste0(gis.wd, "\\Data\\ancient woodland\\curated\\awi.RData") )
+save(aw_grouped,file = paste0(gis.wd, "\\Data\\ancient woodland\\curated\\aw_grouped.RData" ))
+save(awi_grouped_cars,file = paste0(gis.wd, "\\Data\\ancient woodland\\curated\\awi_grouped_cars.RData" ))
+load(paste0(gis.wd, "\\Data\\ancient woodland\\curated\\awi_grouped_cars.RData" )) # awi_grouped_cars
 
-st_write(awi_grouped_cars, "ancient woodland\\curated\\awi_type_cars01.shp")
+st_write(awi_grouped_cars, paste0(gis.wd, "\\Data\\ancient woodland\\curated\\awi_type_cars01.shp"))
 
 # # # # # # # # # # # # # #
 
