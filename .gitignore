@@ -5,7 +5,8 @@
 
 Data/
 Outputs/
-
+*_cache/
+*_files/
 figures/
 images/
 
