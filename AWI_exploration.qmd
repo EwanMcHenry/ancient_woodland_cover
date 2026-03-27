@@ -1,0 +1,1994 @@
+---
+title: "Ancient woodland exploration"
+author: "Ewan McHenry"
+format:
+  html:
+    theme: cosmo
+    reference-location: margin
+    anchor-sections: true
+    embed-resources: false
+    toc: true
+    code-fold: true
+    default_chunk_options:
+      message: false
+    lightbox: true
+
+
+
+knitr:
+  opts_chunk:
+    out.width: "100%"
+    fig.height: 7  # Set your desired height
+editor: visual
+date: today
+date-format: "D MMM, YYYY"
+
+prefer-html: true
+
+execute:
+  echo: false
+  warning: false
+  cache: true
+  cache_refresh: false
+  message: false
+  freeze: auto
+---
+
+```{r libraries, warning=FALSE, message=FALSE, echo=FALSE}
+library(tidyverse)
+library(sf) # for gis
+library(terra)
+library(units) # for set_units()
+library(DT)
+library(U.utilities) # devtools::install_github("EwanMcHenry/U.utilities")
+library(RColorBrewer)
+library(ggpubr)
+library(plotly)
+library(htmlwidgets)
+library(htmltools)
+library(RColorBrewer)
+library(shiny)
+
+
+
+```
+
+```{r config, cache=F}
+options(scipen = 999)  # Turn off scientific notation
+
+#curation code
+# source("Curation - NFI and NI woodland basemap.R")
+
+constants <- list(hexdist.h = 5000,
+                  hexdist.v = 5000,
+                  focal_countries = c("England", "Scotland", "Wales", "N.Ireland"),
+                  map.height = 5, 
+                  map.width = 5,
+                  scale.name = "Hex",
+                  nucat_levels = c("ASNW", "SN ROY", "RAWS",
+                                     "PAWS", "OTH ROY", 
+                                     "Unknown AW",
+                                     "SN LEPO", "OTH LEPO", 
+                                     "Unknown LE"
+                                    ),
+                  high_levels = c("SN", "OTH", "Unknown"),
+                  hexgrid_tol = 200
+
+)
+
+# colours
+
+## pallete vis
+# n_col <- 5  # colours per row
+# 
+# tibble(
+#   index = seq_along(wt_palette),
+#   colour = wt_palette
+# ) %>%
+#   mutate(
+#     row = (index - 1) %/% n_col,
+#     col = (index - 1) %% n_col
+#   ) %>%
+#   ggplot(aes(x = col, y = -row, fill = colour)) +
+#   geom_tile(color = "white", linewidth = 1) +
+#   geom_text(aes(label = index), size = 4) +
+#   scale_fill_identity() +
+#   coord_equal() +
+#   theme_minimal() +
+#   labs(title = "wt_palette") +
+#   theme(
+#     axis.title = element_blank(),
+#     axis.text = element_blank(),
+#     axis.ticks = element_blank()
+#   )
+
+
+# assign different colours to each AWI category, using the WT palette
+nucat_colors <- setNames(wt_palette[c(1, 
+                                      11, 10, 5,
+                                      7,6,
+                                      3,
+                                      12, 14,
+                                      9)], c("Total", constants$nucat_levels))
+# high level colours
+high_colors <- setNames(wt_palette[c(1, 11, 7, 9)], c("Total",constants$high_levels))
+
+
+
+
+
+
+#plots config
+colorCount = length(constants$nucat_levels)
+# getPalette = colorRampPalette(brewer.pal(min(12, colorCount), "Paired"))
+getPalette = colorRampPalette(wt_palette)
+
+
+```
+
+```{r load_data, echo=FALSE, message=FALSE, warning = FALSE}
+
+load(paste0(gis.wd, "\\Data\\ancient woodland\\curated\\awi.RData"))
+# load(paste0(gis.wd, "\\Data\\Designations\\SAC\\sac.RData"))
+awi_df <- awi %>%
+    as.data.frame()
+
+
+countries0 = st_read("D:\\Users\\Ewan McHenry\\OneDrive - the Woodland Trust\\GIS\\Data\\administrative boundaries\\Countries\\5countries.v1.05.shp",
+                     quiet = TRUE) %>% 
+  st_transform(27700) %>% 
+  st_buffer(0) %>% 
+  st_simplify(dTolerance = 10) 
+countries0$country.ha <-  st_area(countries0) %>% 
+  set_units(value = "ha") %>%
+  as.numeric()
+
+countries <- countries0 %>% 
+  rename(country = ctry17nm) %>%
+  filter(country %in% constants$focal_countries ) %>%
+  mutate(country = factor(country, levels = sort(unique(country))))
+
+countries0 <- countries0 %>% 
+    rename(country = ctry17nm) %>%
+  st_simplify(dTolerance = 1000) # for plots - dont need high res
+
+country.ha <- countries %>% 
+  as.data.frame() %>% 
+  select(country, country.ha) %>% 
+  arrange(country) %>% 
+  bind_rows(data.frame(country = "UK", country.ha = sum(.$country.ha)))   #add uk total
+```
+
+```{r awi_country_category_table, echo=FALSE, warning=FALSE, message=FALSE}
+awi.country.category <- awi_df %>%
+  group_by(Country, nu_cat) %>%
+  summarise(awi.ha = sum(awi.ha, na.rm = TRUE), .groups = "drop") %>%
+  pivot_wider(names_from = nu_cat, values_from = awi.ha, values_fill = 0) %>%
+  filter(!is.na(Country))  # Ensures valid country entries
+
+# Calculate UK totals and combine with country data
+awi.country.category <- bind_rows(
+  awi.country.category,
+  awi.country.category %>%
+    summarise(across(where(is.numeric), sum, na.rm = TRUE), Country = "UK")
+)%>%
+  select(Country, all_of(levels(awi$nu_cat)))
+
+# Step 2: Reshape the data to have `awi` types as rows and `Country` as columns
+awi_ha_table <- awi.country.category %>%
+  pivot_longer(cols = -Country, names_to = "AWI_Type", values_to = "Area_ha") %>%
+  pivot_wider(names_from = Country, values_from = Area_ha, values_fill = 0)  %>%
+  replace_na(list(England = 0, Scotland = 0, Wales = 0, `N.Ireland` = 0, UK = 0))  # Ensure all NAs are replaced
+# Calculate All AWI categories as a new row
+total_awi_row <- awi_ha_table %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE)) %>%
+  mutate(AWI_Type = "All AWI categories") %>%
+  select(AWI_Type, everything())
+# Combine the new row with the original table
+awi_ha_table <- bind_rows(awi_ha_table, total_awi_row) %>% 
+  mutate(
+    AWI_Type = factor(
+      AWI_Type,
+      levels = c(constants$nucat_levels, "All AWI categories")
+    )
+  )  %>% 
+  arrange(AWI_Type)
+
+# awi percentage cover by country
+awi_per_table <- awi_ha_table 
+for (i in 2:ncol(awi_per_table)){
+  awi_per_table[,i] <- 100 * awi_ha_table[,i] / country.ha$country.ha[i-1] #so lazy!
+}
+
+awi_ha_long <- awi_ha_table %>%
+  filter(AWI_Type != "All AWI categories") %>%
+  pivot_longer(cols = -AWI_Type, names_to = "COUNTRY", values_to = "Area_ha") %>%
+  filter(Area_ha > 0)  # Remove rows with 0 area
+
+awi_per_long <- awi_per_table %>%
+  filter(AWI_Type != "All AWI categories") %>%
+  pivot_longer(cols = -AWI_Type, names_to = "COUNTRY", values_to = "percentage_cover")
+
+awi_long <- awi_ha_long %>%
+  left_join(awi_per_long, by = c("COUNTRY", "AWI_Type")) %>%
+  mutate(percentage_cover = ifelse(is.na(percentage_cover), 0, percentage_cover))  # Replace NAs with 0
+
+```
+
+```{r make_hexgrid, cache=F}
+hexgrid_file <- paste0("Data/hexgrid", constants$hexdist.h, "x", constants$hexdist.v, ".RData")
+
+if (!file.exists(hexgrid_file)) {
+  hexgrid <- st_make_grid(
+    countries, 
+    cellsize = c(constants$hexdist.h, constants$hexdist.v),
+    square = FALSE
+  ) %>% 
+    st_sf() %>% 
+    st_intersection(st_union(countries))
+
+  hexgrid$hex.ha <- st_area(hexgrid) %>% set_units(value = "ha") %>% as.numeric()
+  hexgrid$cell <- seq_len(nrow(hexgrid))
+
+  save(hexgrid, file = hexgrid_file)
+} else {
+  load(hexgrid_file)
+}
+
+```
+
+```{r st_aw_cover}
+hexgrid_file <- paste0("Data/aw_hex_intersected", constants$hexdist.h, "x", constants$hexdist.v, ".rds")
+
+if (!file.exists(hexgrid_file)) {
+  aw_hex_intersected <- st_intersection(hexgrid, awi) %>%
+    mutate(
+      aw_ha_within_hex = st_area(.) %>%
+        set_units("ha") %>%
+        as.numeric()
+    )
+  
+  # Save the object
+  saveRDS(aw_hex_intersected, hexgrid_file)
+} else {
+  # Load the object if it already exists
+  aw_hex_intersected <- readRDS(hexgrid_file)
+}
+
+
+hexgrid_aw <- aw_hex_intersected %>%  # Calculate the area of NFI polygons within each hex
+  as.data.frame() %>%
+  group_by(cell) %>% 
+  summarise(
+    total_aw_ha = sum(aw_ha_within_hex, na.rm = TRUE),  # Total woodland area within hex
+    ASNW_ha = sum(aw_ha_within_hex[nu_cat == "ASNW"], na.rm = TRUE),  # ASNW area
+    PAWS_ha = sum(aw_ha_within_hex[nu_cat == "PAWS"], na.rm = TRUE),  # PAWS area
+    SN_LEPO_ha = sum(aw_ha_within_hex[nu_cat == "SN LEPO"], na.rm = TRUE),  # SN LEPO area
+    OTH_LEPO_ha = sum(aw_ha_within_hex[nu_cat == "OTH LEPO"], na.rm = TRUE),  # OTH LEPO area
+    Unknown_AW_ha = sum(aw_ha_within_hex[nu_cat == "Unknown AW"], na.rm = TRUE),  # Unknown AW area
+    Unknown_LEPO_ha = sum(aw_ha_within_hex[nu_cat == "Unknown LE"], na.rm = TRUE),  # Unknown LEPO area
+    RAWS_ha = sum(aw_ha_within_hex[nu_cat == "RAWS"], na.rm = TRUE),  # RAWS area
+    SN_ROY_ha = sum(aw_ha_within_hex[nu_cat == "SN ROY"], na.rm = TRUE),  # SN ROY area
+    OTH_ROY_ha = sum(aw_ha_within_hex[nu_cat == "OTH ROY"], na.rm = TRUE),  # OTH ROY area
+        # Percentages relative to hex area
+    total_aw_percentage = (total_aw_ha / hex.ha) * 100,
+    ASNW_percentage = (ASNW_ha / hex.ha) * 100,
+    PAWS_percentage = (PAWS_ha / hex.ha) * 100,
+    SN_LEPO_percentage = (SN_LEPO_ha / hex.ha) * 100,
+    OTH_LEPO_percentage = (OTH_LEPO_ha / hex.ha) * 100,
+    Unknown_AW_percentage = (Unknown_AW_ha / hex.ha) * 100,
+    Unknown_LEPO_percentage = (Unknown_LEPO_ha / hex.ha) * 100,
+    RAWS_percentage = (RAWS_ha / hex.ha) * 100,
+    SN_ROY_percentage = (SN_ROY_ha / hex.ha) * 100,
+    OTH_ROY_percentage = (OTH_ROY_ha / hex.ha) * 100
+  ) %>%
+  ungroup() 
+
+# Merge the calculated areas back onto the original hexgrid
+hexgrid_final <- hexgrid %>%
+  st_simplify(dTolerance = constants$hexgrid_tol) %>% 
+  left_join(hexgrid_aw, by = "cell") %>%
+  #replac all NA with 0
+  mutate(across(where(is.numeric), ~replace_na(., 0)))
+  
+
+```
+
+This is a living document. Any feedback welcomed, particularly if you want to suggest additions or report bugs etc (ewanmchenry\@woodlandtrust.org.uk).
+
+# The AWI
+
+The AWI used here is an amalgamation of the AWIs from each of the four countries. Notably, these use different methods of categorizing ancient woodland. I have attempted to unify these, based on my understanding of how the different categorizations. It gets a bit crazy[^1], hopefully this figure can help, or at least indicate the complexity of these datasets that some might initially think to be quite simple in their structure.
+
+[^1]: I have a few more docs and notes on this, if you're interested, but here is not the place for that detail.
+
+![How are the different AWI types categorised in the different countries' AWIs? How do I unify them to support comparison across coutnries.](images/AWI%20categories%20Sketch_2023-09-01%2015.23.31.excalidraw.sync-conflict-20240810-114956-OXL5OHY.svg)
+
+# Area of Ancient Woodland Inventory (AWI) in Different Countries
+
+::: panel-tabset
+## Areas of AWI
+
+```{r fig_awi_country_area, echo=FALSE}
+
+# Create the ancient woodland area plot
+aw_ha_plot <- awi_long %>%
+  mutate(COUNTRY = factor(COUNTRY, levels = unique(COUNTRY)),
+         AWI_Type = factor(AWI_Type, levels = rev(constants$nucat_levels))) %>%  # Reverse order for display
+  ggplot(aes(fill = AWI_Type, y = Area_ha, x = COUNTRY,
+             text = paste0("<b>", AWI_Type, " in ", COUNTRY, "</b><br>",
+                           format(round(Area_ha, 0), big.mark = ","), " ha<br>",
+                           round(percentage_cover, 1), "% of land"))
+         ) +
+  geom_bar(stat = "identity") +
+  ggtitle("Ancient Woodland - Area") +
+  theme_pubr() +
+  scale_x_discrete(name = NULL) +
+  scale_y_continuous(name = "Area (ha)") +
+  scale_fill_manual(values = nucat_colors) +
+  theme(legend.position = "right",
+        plot.title = element_text(size = 14, face = "bold"),
+        axis.text.x = element_text(angle = 310, hjust = 0),
+        axis.title.x = element_blank())
+
+#save figure
+ggsave("figures/awi_country_area.pdf", plot = aw_ha_plot, width = 178, dpi = 96 , 
+       units = "mm")
+
+# Convert to interactive plotly object
+aw_ha_ggplotly <- ggplotly(aw_ha_plot, tooltip = "text", dynamicTicks = TRUE) %>%
+   config(displayModeBar = FALSE)
+
+aw_ha_ggplotly
+
+
+```
+
+```{r dt_awi_country_area_, echo=FALSE}
+
+# Step 4: Create a datatable for display in the Quarto document
+datatable(
+  awi_ha_table %>%
+  mutate(across(where(is.numeric), round, digits = 0)), 
+  caption = "Area of different AWI categories (ha)",
+  extensions = 'Buttons', 
+  options = list(
+    dom = 'Bfrtip',
+    buttons = list('copy', 'excel'),
+    paging = FALSE,  # Disable pagination
+    scrollY = "400px",  # Enable scrolling
+    scrollX = TRUE,
+    scrollCollapse = TRUE,
+    autoWidth = TRUE,
+    searching = TRUE,  # Enable search/filter
+    ordering = TRUE,  # Enable sorting
+    pageLength = 10,  # Rows per page
+    lengthMenu = c(10, 25, 50, 100)  # Rows per page options
+  )
+)
+```
+
+## AWI Percentage of Land Cover
+
+```{r fig_awi_country_per, echo=FALSE}
+
+aw_per_plot <- awi_long %>%
+  mutate(COUNTRY = factor(COUNTRY, levels = unique(COUNTRY)),
+         AWI_Type = factor(AWI_Type, levels = rev(constants$nucat_levels))) %>%  # Reverse order for display
+  ggplot(aes(fill = AWI_Type, y = percentage_cover, x = COUNTRY,
+             text = paste0("<b>", AWI_Type, " in ", COUNTRY, "</b><br>",
+                           format(round(Area_ha, 0), big.mark = ","), " ha<br>",
+                           round(percentage_cover, 1), "% of land"))
+         ) +
+  geom_bar(stat = "identity") +
+  ggtitle("Ancient woodland land cover") +
+  theme_pubr() +
+  scale_x_discrete(name = NULL) +
+  scale_y_continuous(name = "Land cover (%)") +
+  scale_fill_manual(values = nucat_colors) +
+  theme(legend.position = "right",
+        plot.title = element_text(size = 14, face = "bold"),
+        axis.text.x = element_text(angle = 310, hjust = 0),
+        axis.title.x = element_blank())
+
+#save figure
+ggsave("figures/awi_country_per.pdf", plot = aw_per_plot, width = 178, dpi = 96 , 
+       units = "mm")
+
+# Convert to interactive plotly object
+aw_per_ggplotly <- ggplotly(aw_per_plot, tooltip = "text", dynamicTicks = TRUE) %>%
+   config(displayModeBar = FALSE)
+
+aw_per_ggplotly
+
+
+```
+
+```{r dt_awi_country_per, echo=FALSE}
+datatable(
+  awi_per_table %>%
+  mutate(across(where(is.numeric), round, digits = 2)), 
+  caption = "Cover of different AWI categories (% of land)",
+  extensions = 'Buttons', 
+  options = list(
+    dom = 'Bfrtip',
+    buttons = list('copy', 'excel'),
+    paging = FALSE,  # Disable pagination
+    scrollY = "400px",  # Enable scrolling
+    scrollX = TRUE,
+    scrollCollapse = TRUE,
+    autoWidth = TRUE,
+    searching = TRUE,  # Enable search/filter
+    ordering = TRUE,  # Enable sorting
+    pageLength = 10,  # Rows per page
+    lengthMenu = c(10, 25, 50, 100)  # Rows per page options
+  )
+)
+```
+:::
+
+# Mapping ancient woodland
+
+In Scotland, there is more LEPO in the east, and more ASNW
+
+There are two hotspots for PAWS
+
+::: panel-tabset
+## All AWI categories
+
+```{r write_hexmap_shp}
+
+final_awhexmap_output_path <- paste0("Outputs/", constants$hexdist.h, "x", constants$hexdist.v, "AWhexmap.gpkg")
+
+# Only run if the file doesn't exist
+if (!file.exists(final_awhexmap_output_path)) {
+  # Make sure it's an sf object (skip st_as_sf if it's already sf)
+  st_write(hexgrid_final, dsn = final_awhexmap_output_path, driver = "GPKG")
+}
+
+
+```
+
+```{r AW_hexmap}
+
+plot.col.lims <- c(0, quantile(hexgrid_final$total_aw_percentage[hexgrid_final$total_aw_percentage>0],
+                               probs = 0.99))
+
+awi_cover.hex.map <- map.ploter(to.plot = "total_aw_percentage",
+                          fill.scale.title = expression(paste("AWI cover (%)",sep = "")),
+                          main.title = "Ancient Woodland Inventory" ,
+                          sub.title = NULL,
+                          fillground = hexgrid_final,
+                          background = countries0,
+                          pltly.text = NULL,
+                          transformation = "identity",
+                          col.limits = plot.col.lims,
+                          use.viridis = TRUE,
+                          low.col = "white",
+                          high.col = "red",
+                          fill.line_size = 0.05,
+                          fill.line_colour = NA,
+                          background.fill = "grey90",
+                          background.size = 0.05,
+                          background.colour = "black",
+                          n.breaks = 3,
+                          round_to = 0.1,
+                          just_pretty = T,
+                          manual_breaks = NULL
+) 
+
+awi_cover.hex.map
+
+# save figure
+ggsave("figures/awi_cover_hexmap.pdf", plot = awi_cover.hex.map, width = 178, dpi = 96 , 
+       units = "mm")
+
+```
+
+## ASNW
+
+Ancient Semi-Natural Woodland (ASNW) is a subset of the AWI. It is defined as woodland that has been in existence since at least 1600 AD and has been influenced by human activities. ASNW is considered to be of high ecological value and is a priority habitat for conservation.
+
+```{r hexmap_asnw}
+plot.col.lims <- c(0, quantile(hexgrid_final$ASNW_percentage[hexgrid_final$ASNW_percentage>0],
+                               probs = 0.995))
+
+asnw_cover.hex.map <- map.ploter(to.plot = "ASNW_percentage",
+                          fill.scale.title = expression(paste("ASNW cover (%)",sep = "")),
+                          main.title = "Ancient Semi-Natural Woodland" ,
+                          sub.title = NULL,
+                          fillground = hexgrid_final,
+                          background = countries0,
+                          pltly.text = NULL,
+                          transformation = "identity",
+                          col.limits = plot.col.lims,
+                          use.viridis = TRUE,
+                          low.col = "white",
+                          high.col = "red",
+                          fill.line_size = 0.05,
+                          fill.line_colour = NA,
+                          background.fill = "grey90",
+                          background.size = 0.05,
+                          background.colour = "black",
+                          n.breaks = 3,
+                          round_to = 0.1,
+                          just_pretty = T,
+                          manual_breaks = NULL
+)
+
+asnw_cover.hex.map
+
+# save figure
+ggsave("figures/asnw_cover_hexmap.pdf", plot = asnw_cover.hex.map, width = 178, dpi = 96 , 
+       units = "mm")
+
+
+```
+
+## PAWS
+
+Plantation on Ancient Woodland Sites (PAWS) is a subset of the AWI. It is defined as an ancient woodland site, existing since 1600 AD, on which plantation woodland has been established. PAWS is a priority habitat for restoration.
+
+```{r hexmap_paws}
+plot.col.lims <- c(0, quantile(hexgrid_final$PAWS_percentage[hexgrid_final$PAWS_percentage>0],
+                               probs = 0.995))
+
+paws_cover.hex.map <- map.ploter(to.plot = "PAWS_percentage",
+                          fill.scale.title = expression(paste("PAWS cover (%)",sep = "")),
+                          main.title = "Plantations on Ancient Woodland Sites" ,
+                          sub.title = NULL,
+                          fillground = hexgrid_final,
+                          background = countries0,
+                          pltly.text = NULL,
+                          transformation = "identity",
+                          col.limits = plot.col.lims,
+                          use.viridis = TRUE,
+                          low.col = "white",
+                          high.col = "red",
+                          fill.line_size = 0.05,
+                          fill.line_colour = NA,
+                          background.fill = "grey90",
+                          background.size = 0.05,
+                          background.colour = "black",
+                          n.breaks = 3,
+                          round_to = 0.1,
+                          just_pretty = T,
+                          manual_breaks = NULL
+)
+
+paws_cover.hex.map
+
+# save figure
+ggsave("figures/paws_cover_hexmap.pdf", plot = paws_cover.hex.map, width = 178, dpi = 96 , 
+       units = "mm")
+
+
+```
+
+## RAWS
+
+Restored on Ancient Woodland Sites (RAWS) is a subset of the AWI. This woodland was formerly PAWS, but now has a canopy cover of at least 50% native species. It is important to note that RAWS is not a subset of ASNW, and that the process of restoration is ongoing on these sites: continued conservation management is needed for them to fulfill their ecological potential.
+
+```{r hexmap_raws}
+plot.col.lims <- c(0, quantile(hexgrid_final$RAWS_percentage[hexgrid_final$RAWS_percentage>0],
+                               probs = 0.97))
+
+raws_cover.hex.map <- map.ploter(to.plot = "RAWS_percentage",
+                          fill.scale.title = expression(paste("RAWS cover (%)",sep = "")),
+                          main.title = "Restored Ancient Woodland Sites" ,
+                          sub.title = NULL,
+                          fillground = hexgrid_final,
+                          background = countries0,
+                          pltly.text = NULL,
+                          transformation = "identity",
+                          col.limits = plot.col.lims,
+                          use.viridis = TRUE,
+                          low.col = "white",
+                          high.col = "red",
+                          fill.line_size = 0.05,
+                          fill.line_colour = NA,
+                          background.fill = "grey90",
+                          background.size = 0.05,
+                          background.colour = "black",
+                          n.breaks = 3,
+                          round_to = 0.1,
+                          just_pretty = T,
+                          manual_breaks = NULL
+)
+
+raws_cover.hex.map
+
+# save figure
+ggsave("figures/raws_cover_hexmap.pdf", plot = raws_cover.hex.map, width = 178, dpi = 96 , 
+       units = "mm")
+
+```
+
+## Unknown Ancient Woodland
+
+Ancient Woodland Inventory (AWI) data is not perfect, and the type of woodland on some AWI sites is uncertain. This map shows the proportion of hexagons covered by ancient woodland of unknown type.
+
+```{r hexmap_unknown}
+plot.col.lims <- c(0, quantile(hexgrid_final$Unknown_AW_percentage[hexgrid_final$Unknown_AW_percentage>0],
+                               probs = 0.97))
+
+unknown_cover.hex.map <- map.ploter(to.plot = "Unknown_AW_percentage",
+                          fill.scale.title = expression(paste("Unknown cover (%)",sep = "")),
+                          main.title = "Unknown Ancient Woodland" ,
+                          sub.title = NULL,
+                          fillground = hexgrid_final,
+                          background = countries0,
+                          pltly.text = NULL,
+                          transformation = "identity",
+                          col.limits = plot.col.lims,
+                          use.viridis = TRUE,
+                          low.col = "white",
+                          high.col = "red",
+                          fill.line_size = 0.05,
+                          fill.line_colour = NA,
+                          background.fill = "grey90",
+                          background.size = 0.05,
+                          background.colour = "black",
+                          n.breaks = 3,
+                          round_to = 0.1,
+                          just_pretty = T,
+                          manual_breaks = NULL
+)
+
+unknown_cover.hex.map
+
+# save figure
+ggsave("figures/unknown_cover_hexmap.pdf", plot = unknown_cover.hex.map, width = 178, dpi = 96 , 
+       units = "mm")
+
+
+```
+
+## SN LEPO
+
+Long Established Plantation Origin woodland (Semi-natural).
+
+```{r hexmap_snlepo}
+plot.col.lims <- c(0, quantile(hexgrid_final$SN_LEPO_percentage[hexgrid_final$SN_LEPO_percentage>0],
+                               probs = 0.99))
+
+snlepo_cover.hex.map <- map.ploter(to.plot = "SN_LEPO_percentage",
+                          fill.scale.title = expression(paste("SN LEPO cover (%)",sep = "")),
+                          main.title = "SN LEPO" ,
+                          sub.title = NULL,
+                          fillground = hexgrid_final,
+                          background = countries0,
+                          pltly.text = NULL,
+                          transformation = "identity",
+                          col.limits = plot.col.lims,
+                          use.viridis = TRUE,
+                          low.col = "white",
+                          high.col = "red",
+                          fill.line_size = 0.05,
+                          fill.line_colour = NA,
+                          background.fill = "grey90",
+                          background.size = 0.05,
+                          background.colour = "black",
+                          n.breaks = 3,
+                          round_to = 0.1,
+                          just_pretty = T,
+                          manual_breaks = NULL
+)
+
+snlepo_cover.hex.map
+
+# save figure
+ggsave("figures/snlepo_cover_hexmap.pdf", plot = snlepo_cover.hex.map, width = 178, dpi = 96 , 
+       units = "mm")
+
+
+```
+
+## Other LEPO
+
+Long Established Plantation Origin woodland (Non semi-natural).
+
+```{r hexmap_otherlepo}
+plot.col.lims <- c(0, quantile(hexgrid_final$OTH_LEPO_ha[hexgrid_final$OTH_LEPO_ha>0],
+                               probs = 0.99))
+
+otherlepo_cover.hex.map <- map.ploter(to.plot = "OTH_LEPO_ha",
+                          fill.scale.title = expression(paste("Other LEPO cover (%)",sep = "")),
+                          main.title = "Other LEPO" ,
+                          sub.title = NULL,
+                          fillground = hexgrid_final,
+                          background = countries0,
+                          pltly.text = NULL,
+                          transformation = "identity",
+                          col.limits = plot.col.lims,
+                          use.viridis = TRUE,
+                          low.col = "white",
+                          high.col = "red",
+                          fill.line_size = 0.05,
+                          fill.line_colour = NA,
+                          background.fill = "grey90",
+                          background.size = 0.05,
+                          background.colour = "black",
+                          n.breaks = 3,
+                          round_to = 0.1,
+                          just_pretty = T,
+                          manual_breaks = NULL
+)
+
+otherlepo_cover.hex.map
+
+# save figure
+ggsave("figures/otherlepo_cover_hexmap.pdf", plot = otherlepo_cover.hex.map, width = 178, dpi = 96 , 
+       units = "mm")
+
+```
+
+## Unknown LEPO
+
+AWI data is not perfect, the type of woodland on some LEPO sites is uncertain. This map shows the proportion of hexagons covered by LEPO of unknown type.
+
+```{r hexmap_unknownlepo}
+plot.col.lims <- c(0, quantile(hexgrid_final$Unknown_LEPO_percentage[hexgrid_final$Unknown_LEPO_percentage>0],
+                               probs = 0.99))
+
+unknownlepo_cover.hex.map <- map.ploter(to.plot = "Unknown_LEPO_percentage",
+                          fill.scale.title = expression(paste("Unknown LEPO cover (%)",sep = "")),
+                          main.title = "Unknown LEPO" ,
+                          sub.title = NULL,
+                          fillground = hexgrid_final,
+                          background = countries0,
+                          pltly.text = NULL,
+                          transformation = "identity",
+                          col.limits = plot.col.lims,
+                          use.viridis = TRUE,
+                          low.col = "white",
+                          high.col = "red",
+                          fill.line_size = 0.05,
+                          fill.line_colour = NA,
+                          background.fill = "grey90",
+                          background.size = 0.05,
+                          background.colour = "black",
+                          n.breaks = 3,
+                          round_to = 0.1,
+                          just_pretty = T,
+                          manual_breaks = NULL
+)
+
+unknownlepo_cover.hex.map
+
+# save figure
+ggsave("figures/unknownlepo_cover_hexmap.pdf", plot = unknownlepo_cover.hex.map, width = 178, dpi = 96 , 
+       units = "mm")
+
+
+```
+
+## Roy SN
+
+Roy is a sub-category of ancient woodland used in Scotland with evidence of existence in 1750, but with a potential of a breif unwooded interlude. Roy ancient woodlands appear on the 1750s Roy maps (providing historic evidence of woodland on sites extending beyond the maps on which other types of AWI are largely based), but may not appear as "woodland" on the c. 1850 1st edition OS. Many of these sites do however display many trees on the 1850s maps; the threshold of defining "woodland" on these is somewhat arbitrary. This map shows the proportion of hexagons covered by Roy ancient woodland with semi-natural characteristics.
+
+```{r hexmap_roysn}
+plot.col.lims <- c(0, quantile(hexgrid_final$SN_ROY_percentage[hexgrid_final$SN_ROY_percentage>0],
+                               probs = 0.97))
+
+roysn_cover.hex.map <- map.ploter(to.plot = "SN_ROY_percentage",
+                          fill.scale.title = expression(paste("Roy SN cover (%)",sep = "")),
+                          main.title = "Roy (Semi-Natural)" ,
+                          sub.title = NULL,
+                          fillground = hexgrid_final,
+                          background = countries0,
+                          pltly.text = NULL,
+                          transformation = "identity",
+                          col.limits = plot.col.lims,
+                          use.viridis = TRUE,
+                          low.col = "white",
+                          high.col = "red",
+                          fill.line_size = 0.05,
+                          fill.line_colour = NA,
+                          background.fill = "grey90",
+                          background.size = 0.05,
+                          background.colour = "black",
+                          n.breaks = 3,
+                          round_to = 0.1,
+                          just_pretty = T,
+                          manual_breaks = NULL
+)
+
+roysn_cover.hex.map
+
+# save figure
+ggsave("figures/roysn_cover_hexmap.pdf", plot = roysn_cover.hex.map, width = 178, dpi = 96 , 
+       units = "mm")
+
+```
+
+## Roy Other
+
+Roy is a sub-category of ancient woodland used in Scotland with evidence of existence in 1750, but with a potential of a brief unwooded interlude. Roy ancient woodlands appear on the 1750s Roy maps (providing historic evidence of woodland on sites extending beyond the maps on which other types of AWI are largely based), but may not appear as "woodland" on the c. 1850 1st edition OS. Many of these sites do however display many trees on the 1850s maps; the threshold of defining "woodland" on these is somewhat arbitrary. This map shows the proportion of hexagons covered by Roy ancient woodland with non semi-natural characteristics.
+
+```{r hexmap_royother}
+plot.col.lims <- c(0, quantile(hexgrid_final$OTH_ROY_percentage[hexgrid_final$OTH_ROY_percentage>0],
+                               probs = 0.98))
+
+royother_cover.hex.map <- map.ploter(to.plot = "OTH_ROY_percentage",
+                          fill.scale.title = expression(paste("Roy Other cover (%)",sep = "")),
+                          main.title = "Roy (Other)" ,
+                          sub.title = NULL,
+                          fillground = hexgrid_final,
+                          background = countries0,
+                          pltly.text = NULL,
+                          transformation = "identity",
+                          col.limits = plot.col.lims,
+                          use.viridis = TRUE,
+                          low.col = "white",
+                          high.col = "red",
+                          fill.line_size = 0.05,
+                          fill.line_colour = NA,
+                          background.fill = "grey90",
+                          background.size = 0.05,
+                          background.colour = "black",
+                          n.breaks = 3,
+                          round_to = 0.1,
+                          just_pretty = T,
+                          manual_breaks = NULL
+)
+
+royother_cover.hex.map
+
+# save figure
+ggsave("figures/royother_cover_hexmap.pdf", plot = royother_cover.hex.map, width = 178, dpi = 96 , 
+       units = "mm")
+
+
+```
+:::
+
+# Designated Ancient Woodland
+
+## SSSI or SAC
+
+```{r sac_sssi_awi_ha_table}
+load(paste0(gis.wd, "\\Data\\Designations\\sac_sssi_awi.RData"))
+
+sac_sssi_awi.country.category <- sac_sssi_awi %>%
+    as.data.frame() %>%
+  group_by(Country, nu_cat) %>%
+  summarise(ha_sac_sssi_awi = sum(ha_sac_sssi_awi, na.rm = TRUE), .groups = "drop") %>%
+  pivot_wider(names_from = nu_cat, values_from = ha_sac_sssi_awi, values_fill = 0) %>%
+  filter(!is.na(Country))  # Ensures valid country entries
+# Calculate UK totals and combine with country data
+sac_sssi_awi.country.category <- bind_rows(
+  sac_sssi_awi.country.category,
+  sac_sssi_awi.country.category %>%
+    summarise(across(where(is.numeric), sum, na.rm = TRUE), Country = "UK")
+)%>%
+  select(Country, all_of(levels(sac_sssi_awi$nu_cat)))
+# Step 2: Reshape the data to have `awi` types as rows and `Country` as columns
+sac_sssi_awi_ha_table <- sac_sssi_awi.country.category %>%
+  pivot_longer(cols = -Country, names_to = "AWI_Type", values_to = "Area_ha") %>%
+  pivot_wider(names_from = Country, values_from = Area_ha, values_fill = 0)  %>%
+  replace_na(list(England = 0, Scotland = 0, Wales = 0, `N.Ireland` = 0, UK = 0))  # Ensure all NAs are replaced
+# Calculate All AWI categories as a new row
+total_sac_sssi_awi_row <- sac_sssi_awi_ha_table %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE)) %>%
+  mutate(AWI_Type = "All AWI categories") %>%
+  select(AWI_Type, everything())
+# Combine the new row with the original table
+sac_sssi_awi_ha_table <- bind_rows(sac_sssi_awi_ha_table, total_sac_sssi_awi_row) %>% 
+  arrange(factor(AWI_Type, levels = c(constants$nucat_levels, "All AWI categories")))
+
+awi_per_sac_sssi_table <- sac_sssi_awi_ha_table 
+for (i in 2:ncol(awi_per_sac_sssi_table)){
+  awi_per_sac_sssi_table[,i] <- 100 * sac_sssi_awi_ha_table[,i] / awi_ha_table[,i] #so lazy!
+}
+
+sac_sssi_awi_ha_long <- sac_sssi_awi_ha_table %>%
+  filter(AWI_Type != "All AWI categories") %>%
+  pivot_longer(cols = -AWI_Type, names_to = "COUNTRY", values_to = "Area_ha") %>%
+  filter(Area_ha > 0)  # Remove rows with 0 area
+
+sac_sssi_awi_per_long <- awi_per_sac_sssi_table %>%
+  filter(AWI_Type != "All AWI categories") %>%
+  pivot_longer(cols = -AWI_Type, names_to = "COUNTRY", values_to = "percentage_sac_sssi")
+sac_sssi_awi_long <- sac_sssi_awi_ha_long %>%
+  left_join(sac_sssi_awi_per_long, by = c("COUNTRY", "AWI_Type")) %>%
+  mutate(percentage_sac_sssi = ifelse(is.na(percentage_sac_sssi), 0, percentage_sac_sssi))  # Replace NAs with 0
+
+```
+
+### Area of SSSI or SAC Ancient Woodland
+
+```{r fig_Area_of_SSI_or_SAC_ancient_woodland}
+# Create the ancient woodland area plot
+sac_sssi_aw_ha_plot <- sac_sssi_awi_long %>%
+  mutate(COUNTRY = factor(COUNTRY, levels = unique(COUNTRY)),
+         AWI_Type = factor(AWI_Type, levels = rev(constants$nucat_levels))) %>%  # Reverse order for display
+  ggplot(aes(fill = AWI_Type, y = Area_ha, x = COUNTRY,
+             text = paste0("<b>SSSI or SAC ", AWI_Type, " in ", COUNTRY, "</b><br>",
+                           format(round(Area_ha, 0), big.mark = ","), " ha<br>",
+                           round(percentage_sac_sssi, 1), "% of", AWI_Type, " in ", COUNTRY))
+         ) +
+  geom_bar(stat = "identity") +
+  ggtitle("SSSI or SAC Ancient Woodland - Area") +
+  theme_pubr() +
+  scale_x_discrete(name = NULL) +
+  scale_y_continuous(name = "Area (ha)") +
+  scale_fill_manual(values = nucat_colors) +
+  theme(legend.position = "right",
+        plot.title = element_text(size = 14, face = "bold"),
+        axis.text.x = element_text(angle = 310, hjust = 0),
+        axis.title.x = element_blank())
+#save figure
+ggsave("figures/sac_sssi_awi_country_area.pdf", plot = sac_sssi_aw_ha_plot, width = 178, dpi = 96 , 
+       units = "mm")
+# Convert to interactive plotly object
+sac_sssi_aw_ha_ggplotly <- ggplotly(sac_sssi_aw_ha_plot, tooltip = "text", dynamicTicks = TRUE) %>%
+   config(displayModeBar = FALSE)
+sac_sssi_aw_ha_ggplotly
+```
+
+```{r dt_sac_sssi_awi_country_area_, echo=FALSE}
+datatable(
+  sac_sssi_awi_ha_table %>%
+  mutate(across(where(is.numeric), round, digits = 0)), 
+  caption = "Area of SSSI or SAC in different AWI categories (ha)",
+  extensions = 'Buttons', 
+  options = list(
+    dom = 'Bfrtip',
+    buttons = list('copy', 'excel'),
+    paging = FALSE,  # Disable pagination
+    scrollY = "400px",  # Enable scrolling
+    scrollX = TRUE,
+    scrollCollapse = TRUE,
+    autoWidth = TRUE,
+    searching = TRUE,  # Enable search/filter
+    ordering = TRUE,  # Enable sorting
+    pageLength = 10,  # Rows per page
+    lengthMenu = c(10, 25, 50, 100)  # Rows per page options
+  )
+)
+
+```
+
+### Percentage of AWI that is SSSI or SAC
+
+```{r dt_awi_per_sac_sssi, echo=FALSE}
+datatable(
+  awi_per_sac_sssi_table %>%
+  mutate(across(where(is.numeric), round, digits = 2)), 
+  caption = "SSSI or SAC cover of different AWI categories (%)",
+  extensions = 'Buttons', 
+  options = list(
+    dom = 'Bfrtip',
+    buttons = list('copy', 'excel'),
+    paging = FALSE,  # Disable pagination
+    scrollY = "400px",  # Enable scrolling
+    scrollX = TRUE,
+    scrollCollapse = TRUE,
+    autoWidth = TRUE,
+    searching = TRUE,  # Enable search/filter
+    ordering = TRUE,  # Enable sorting
+    pageLength = 10,  # Rows per page
+    lengthMenu = c(10, 25, 50, 100)  # Rows per page options
+  )
+)
+```
+
+## SSSI
+
+```{r sssi_aw_summarytable}
+load(paste0(gis.wd, "\\Data\\Designations\\SSSI-ASSI\\sssi-awi.RData"))
+
+sssi_awi.country.category <- sssi_awi %>%
+    as.data.frame() %>%
+  group_by(Country, nu_cat) %>%
+  summarise(ha_sssi_awi = sum(ha_sssi_awi, na.rm = TRUE), .groups = "drop") %>%
+  pivot_wider(names_from = nu_cat, values_from = ha_sssi_awi, values_fill = 0) %>%
+  filter(!is.na(Country))  # Ensures valid country entries
+
+# Calculate UK totals and combine with country data
+sssi_awi.country.category <- bind_rows(
+  sssi_awi.country.category,
+  sssi_awi.country.category %>%
+    summarise(across(where(is.numeric), sum, na.rm = TRUE), Country = "UK")
+)%>%
+  select(Country, all_of(levels(sssi_awi$nu_cat)))
+
+# Step 2: Reshape the data to have `awi` types as rows and `Country` as columns
+sssi_awi_ha_table <- sssi_awi.country.category %>%
+  pivot_longer(cols = -Country, names_to = "AWI_Type", values_to = "Area_ha") %>%
+  pivot_wider(names_from = Country, values_from = Area_ha, values_fill = 0)  %>%
+  replace_na(list(England = 0, Scotland = 0, Wales = 0, `N.Ireland` = 0, UK = 0))  # Ensure all NAs are replaced
+# Calculate All AWI categories as a new row
+total_sssi_awi_row <- sssi_awi_ha_table %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE)) %>%
+  mutate(AWI_Type = "All AWI categories") %>%
+  select(AWI_Type, everything())
+# Combine the new row with the original table
+sssi_awi_ha_table <- bind_rows(sssi_awi_ha_table, total_sssi_awi_row) %>% 
+  arrange(factor(AWI_Type, levels = c(constants$nucat_levels, "All AWI categories")))
+
+# awi percentage sssi by country
+awi_per_sssi_table <- sssi_awi_ha_table 
+for (i in 2:ncol(awi_per_sssi_table)){
+  awi_per_sssi_table[,i] <- 100 * sssi_awi_ha_table[,i] / awi_ha_table[,i] #so lazy!
+}
+
+sssi_awi_ha_long <- sssi_awi_ha_table %>%
+  filter(AWI_Type != "All AWI categories") %>%
+  pivot_longer(cols = -AWI_Type, names_to = "COUNTRY", values_to = "Area_ha") %>%
+  filter(Area_ha > 0)  # Remove rows with 0 area
+
+sssi_awi_per_long <- awi_per_sssi_table %>%
+  filter(AWI_Type != "All AWI categories") %>%
+  pivot_longer(cols = -AWI_Type, names_to = "COUNTRY", values_to = "percentage_sssi")
+
+sssi_awi_long <- sssi_awi_ha_long %>%
+  left_join(sssi_awi_per_long, by = c("COUNTRY", "AWI_Type")) %>%
+  mutate(percentage_sssi = ifelse(is.na(percentage_sssi), 0, percentage_sssi))  # Replace NAs with 0
+
+```
+
+*Note that, in N. Ireland, ASSI is the corresponding designation to SSSI.*
+
+### Area of SSSI Ancient Woodland
+
+```{r fig_Area_of_SSI_ancient_woodland}
+
+# Create the ancient woodland area plot
+sssi_aw_ha_plot <- sssi_awi_long %>%
+  mutate(COUNTRY = factor(COUNTRY, levels = unique(COUNTRY)),
+         AWI_Type = factor(AWI_Type, levels = rev(constants$nucat_levels))) %>%  # Reverse order for display
+  ggplot(aes(fill = AWI_Type, y = Area_ha, x = COUNTRY,
+             text = paste0("<b>SSSI ", AWI_Type, " in ", COUNTRY, "</b><br>",
+                           format(round(Area_ha, 0), big.mark = ","), " ha<br>",
+                           round(percentage_sssi, 1), "% of ", AWI_Type))
+         ) +
+  geom_bar(stat = "identity") +
+  ggtitle("SSSI Ancient Woodland - Area") +
+  theme_pubr() +
+  scale_x_discrete(name = NULL) +
+  scale_y_continuous(name = "Area (ha)") +
+  scale_fill_manual(values = nucat_colors) +
+  theme(legend.position = "right",
+        plot.title = element_text(size = 14, face = "bold"),
+        axis.text.x = element_text(angle = 310, hjust = 0),
+        axis.title.x = element_blank())
+
+#save figure
+ggsave("figures/sssi_awi_country_area.pdf", plot = sssi_aw_ha_plot, width = 178, dpi = 96 , 
+       units = "mm")
+
+# Convert to interactive plotly object
+sssi_aw_ha_ggplotly <- ggplotly(sssi_aw_ha_plot, tooltip = "text", dynamicTicks = TRUE) %>%
+   config(displayModeBar = FALSE)
+
+sssi_aw_ha_ggplotly
+
+
+```
+
+```{r dt_sssi_awi_country_area_, echo=FALSE}
+datatable(
+  sssi_awi_ha_table %>%
+  mutate(across(where(is.numeric), round, digits = 0)), 
+  caption = "Area of SSSI in different AWI categories (ha)",
+  extensions = 'Buttons', 
+  options = list(
+    dom = 'Bfrtip',
+    buttons = list('copy', 'excel'),
+    paging = FALSE,  # Disable pagination
+    scrollY = "400px",  # Enable scrolling
+    scrollX = TRUE,
+    scrollCollapse = TRUE,
+    autoWidth = TRUE,
+    searching = TRUE,  # Enable search/filter
+    ordering = TRUE,  # Enable sorting
+    pageLength = 10,  # Rows per page
+    lengthMenu = c(10, 25, 50, 100)  # Rows per page options
+  )
+)
+
+
+
+```
+
+### Percentage of AWI that is SSSI
+
+```{r dt_awi_per_sssi, echo=FALSE}
+datatable(
+  awi_per_sssi_table %>%
+  mutate(across(where(is.numeric), round, digits = 2)), 
+  caption = "SSSI cover of different AWI categories (%)",
+  extensions = 'Buttons', 
+  options = list(
+    dom = 'Bfrtip',
+    buttons = list('copy', 'excel'),
+    paging = FALSE,  # Disable pagination
+    scrollY = "400px",  # Enable scrolling
+    scrollX = TRUE,
+    scrollCollapse = TRUE,
+    autoWidth = TRUE,
+    searching = TRUE,  # Enable search/filter
+    ordering = TRUE,  # Enable sorting
+    pageLength = 10,  # Rows per page
+    lengthMenu = c(10, 25, 50, 100)  # Rows per page options
+  )
+)
+```
+
+## SAC
+
+```{r sac_awi_ha_table}
+load(paste0(gis.wd, "\\Data\\Designations\\SAC\\sac-awi.RData"))
+
+sac_awi.country.category <- sac_awi %>%
+    as.data.frame() %>%
+  group_by(Country, nu_cat) %>%
+  summarise(ha_sac_awi = sum(ha_sac_awi, na.rm = TRUE), .groups = "drop") %>%
+  pivot_wider(names_from = nu_cat, values_from = ha_sac_awi, values_fill = 0) %>%
+  filter(!is.na(Country))  # Ensures valid country entries
+# Calculate UK totals and combine with country data
+sac_awi.country.category <- bind_rows(
+  sac_awi.country.category,
+  sac_awi.country.category %>%
+    summarise(across(where(is.numeric), sum, na.rm = TRUE), Country = "UK")
+)%>%
+  select(Country, all_of(levels(sac_awi$nu_cat)))
+
+
+# Step 2: Reshape the data to have `awi` types as rows and `Country` as columns
+sac_awi_ha_table <- sac_awi.country.category %>%
+  pivot_longer(cols = -Country, names_to = "AWI_Type", values_to
+ = "Area_ha") %>%
+  pivot_wider(names_from = Country, values_from = Area_ha, values_fill = 0)  %>%
+  replace_na(list(England = 0, Scotland = 0, Wales = 0, `N.Ireland` = 0, UK = 0))  # Ensure all NAs are replaced
+# Calculate All AWI categories as a new row
+total_sac_awi_row <- sac_awi_ha_table %>%
+  summarise(across(where(is.numeric), sum, na.rm = TRUE)) %>%
+  mutate(AWI_Type = "All AWI categories") %>%
+  select(AWI_Type, everything())
+# Combine the new row with the original table
+sac_awi_ha_table <- bind_rows(sac_awi_ha_table, total_sac_awi_row) %>% 
+  arrange(factor(AWI_Type, levels = c(constants$nucat_levels, "All AWI categories")))
+
+awi_per_sac_table <- sac_awi_ha_table 
+for (i in 2:ncol(awi_per_sac_table)){
+  awi_per_sac_table[,i] <- 100 * sac_awi_ha_table[,i] / awi_ha_table[,i] #so lazy!
+}
+
+
+sac_awi_ha_long <- sac_awi_ha_table %>%
+  filter(AWI_Type != "All AWI categories") %>%
+  pivot_longer(cols = -AWI_Type, names_to = "COUNTRY", values_to = "Area_ha") %>%
+  filter(Area_ha > 0)  # Remove rows with 0 area
+
+sac_awi_per_long <- awi_per_sac_table %>%
+  filter(AWI_Type != "All AWI categories") %>%
+  pivot_longer(cols = -AWI_Type, names_to = "COUNTRY", values_to = "percentage_sac")
+
+sac_awi_long <- sac_awi_ha_long %>%
+  left_join(sac_awi_per_long, by = c("COUNTRY", "AWI_Type")) %>%
+  mutate(percentage_sac = ifelse(is.na(percentage_sac), 0, percentage_sac))  # Replace NAs with 0
+
+
+```
+
+### Area of SAC Ancient Woodland
+
+```{r fig_Area_of_SAC_ancient_woodland}
+
+# Create the ancient woodland area plot
+sac_aw_ha_plot <- sac_awi_long %>%
+  mutate(COUNTRY = factor(COUNTRY, levels = unique(COUNTRY)),
+         AWI_Type = factor(AWI_Type, levels = rev(constants$nucat_levels))) %>%  # Reverse order for display
+  ggplot(aes(fill = AWI_Type, y = Area_ha, x = COUNTRY,
+             text = paste0("<b>SAC ", AWI_Type, " in ", COUNTRY, "</b><br>",
+                           format(round(Area_ha, 0), big.mark = ","), " ha<br>",
+                           round(percentage_sac, 1), "% of ", AWI_Type))
+         ) +
+  geom_bar(stat = "identity") +
+  ggtitle("SAC Ancient Woodland - Area") +
+  theme_pubr() +
+  scale_x_discrete(name = NULL) +
+  scale_y_continuous(name = "Area (ha)") +
+  scale_fill_manual(values = nucat_colors) +
+  theme(legend.position = "right",
+        plot.title = element_text(size = 14, face = "bold"),
+        axis.text.x = element_text(angle = 310, hjust = 0),
+        axis.title.x = element_blank())
+#save figure
+ggsave("figures/sac_awi_country_area.pdf", plot = sac_aw_ha_plot, width = 178, dpi = 96 , 
+       units = "mm")
+
+# Convert to interactive plotly object
+sac_aw_ha_ggplotly <- ggplotly(sac_aw_ha_plot, tooltip = "text", dynamicTicks = TRUE) %>%
+   config(displayModeBar = FALSE)
+
+sac_aw_ha_ggplotly
+
+```
+
+```{r dt_sac_awi_country_area_, echo=FALSE}
+datatable(
+  sac_awi_ha_table %>%
+  mutate(across(where(is.numeric), round, digits = 0)), 
+  caption = "Area of SAC in different AWI categories (ha)",
+  extensions = 'Buttons', 
+  options = list(
+    dom = 'Bfrtip',
+    buttons = list('copy', 'excel'),
+    paging = FALSE,  # Disable pagination
+    scrollY = "400px",  # Enable scrolling
+    scrollX = TRUE,
+    scrollCollapse = TRUE,
+    autoWidth = TRUE,
+    searching = TRUE,  # Enable search/filter
+    ordering = TRUE,  # Enable sorting
+    pageLength = 10,  # Rows per page
+    lengthMenu = c(10, 25, 50, 100)  # Rows per page options
+  )
+)
+```
+
+### Percentage of AWI that is SAC
+
+```{r dt_awi_per_sac, echo=FALSE}
+datatable(
+  awi_per_sac_table %>%
+  mutate(across(where(is.numeric), round, digits = 2)), 
+  caption = "SAC cover of different AWI categories (%)",
+  extensions = 'Buttons', 
+  options = list(
+    dom = 'Bfrtip',
+    buttons = list('copy', 'excel'),
+    paging = FALSE,  # Disable pagination
+    scrollY = "400px",  # Enable scrolling
+    scrollX = TRUE,
+    scrollCollapse = TRUE,
+    autoWidth = TRUE,
+    searching = TRUE,  # Enable search/filter
+    ordering = TRUE,  # Enable sorting
+    pageLength = 10,  # Rows per page
+    lengthMenu = c(10, 25, 50, 100)  # Rows per page options
+  )
+)
+```
+
+# Size of ancient woodland sites
+
+An ask came from Nick Phillips about the size of AWI sites, primarily to inform policy around PAWS restoration by acting as evidence RE that commercial viability of e.g. harvest operations at these sites, suspecting that many were small, unviable for commercial forestry, and thus commercial forestery concerns may be less relevant for policy. Here I sought to investigate that speculation. An additional ask was made around the proportion on the public
+
+In particular we were interested in the percentage of sites that were \< 3ha, which would essentially make them economically unviable for forestry operations.
+
+Below are tables that summarise the site-area distributions of different AWI categories (high and detailed level), with info split by country. First, this is presented for sites (i.e. the number of sites distributed by their area) and then by (i.e. the combined area of sites of different areas). Obviously, while most sites may be small, more area can be within larger sites.
+
+Notably, this is not related to habitat patch size, and should not be interpreted ecologically. Often AWI sites are contiguous with others, or other woodland that would effectively form part of the same habitat patch (while still being separate management units).
+
+```{r f_cum_dens_awi}
+
+# function to cumulative density plot of sites
+f_cum_dens_awi_sites <- function(awi.data, category_col, size_col, colors) {
+  
+  # Make sure awi.data is a data frame
+  df <- as.data.frame(awi.data)
+  
+  # Compute counts per category
+  counts <- df %>%
+    group_by(!!sym(category_col)) %>%
+    summarise(n = n(), .groups = "drop")
+  
+  total_n <- sum(counts$n)
+  
+  # Build dynamic legend labels
+  # "Total" first, then all other categories
+  category_levels <- c("Total", as.character(counts[[category_col]]))
+  
+  # legendf labels
+  legend_labels <- setNames(
+    rep("", length(colors)),
+    names(colors)
+  )
+  
+  legend_labels["Total"] <- paste0("Total (N = ", scales::comma(total_n), ")")
+  
+  for(cat in setdiff(names(colors), "Total")) {
+    n_cat <- counts$n[as.character(counts[[category_col]]) == cat]
+    if(length(n_cat) == 0) n_cat <- 0
+    legend_labels[cat] <- paste0(cat, " (N = ", scales::comma(n_cat), ")")
+  }  
+  # format legend
+  n_legend_cols <- ifelse(length(colors) <= 4, 2, 3)
+  
+  
+  # Plot ECDF
+  ggplot(df, aes(x = !!sym(size_col), colour = !!sym(category_col))) +
+    
+    # Overall line
+    stat_ecdf(
+      aes(colour = "Total"),
+      geom = "step",
+      direction = "vh",
+      linewidth = 1.2
+    ) +
+    
+    # Category lines
+    stat_ecdf(
+      geom = "step",
+      direction = "vh",
+      linewidth = 1
+    ) +
+    
+    scale_y_continuous(
+      name = "Sites smaller (% of sites)",
+      labels = scales::percent
+    ) +
+    scale_x_continuous(
+      name = "Area of AWI site (ha)",
+      expand = c(0, 0)
+    ) +
+    coord_cartesian(xlim = c(0, 12)) +
+    scale_colour_manual(
+      values = colors,
+      breaks = names(colors),
+      labels = legend_labels,
+      name = "Category",
+      guide = guide_legend(ncol = n_legend_cols, byrow = TRUE)
+    ) +
+    theme_minimal() +
+    theme(legend.position = "bottom",
+          legend.key.width = unit(1.2, "lines")
+          )
+}
+
+# function for cumulative density plot of area
+f_cum_dens_awi_area <- function(awi.data, category_col, size_col, colors) {
+  
+  # Make sure awi.data is a data frame
+  df <- as.data.frame(awi.data)
+  
+  # Compute total area per category
+  area_sums <- df %>%
+    group_by(!!sym(category_col)) %>%
+    summarise(total_area = sum(!!sym(size_col), na.rm = TRUE), .groups = "drop")
+  
+  total_area_all <- sum(area_sums$total_area)
+  
+    # legendf labels
+legend_labels <- setNames(
+  rep("", length(colors)),
+  names(colors)
+)
+
+legend_labels["Total"] <- paste0(
+  "Total (Area = ", scales::comma(total_area_all), " ha)"
+)
+
+for(cat in setdiff(names(colors), "Total")) {
+  
+  area_cat <- area_sums$total_area[
+    as.character(area_sums[[category_col]]) == cat
+  ]
+  
+  if(length(area_cat) == 0) area_cat <- 0
+  
+  legend_labels[cat] <- paste0(
+    cat, " (Area = ", scales::comma(area_cat), " ha)"
+  )
+}
+  n_legend_cols <- ifelse(length(colors) <= 4, 2, 3)
+  
+  # Calculate cumulative area percentages
+# categories
+  df_cat <- df %>%
+  group_by(!!sym(category_col)) %>%
+  arrange(!!sym(size_col), .by_group = TRUE) %>%
+  mutate(
+    cum_area = cumsum(!!sym(size_col)),
+    cum_area_perc = cum_area / sum(!!sym(size_col), na.rm = TRUE)
+  ) %>%
+  ungroup()
+## total
+df_total <- df %>%
+  arrange(!!sym(size_col)) %>%
+  mutate(
+    cum_area = cumsum(!!sym(size_col)),
+    cum_area_perc = cum_area / sum(!!sym(size_col), na.rm = TRUE),
+    !!category_col := "Total"
+  )
+## combine
+df_plot <- bind_rows(df_cat, df_total)
+
+  # Plot cumulative area percentage
+ggplot(df_plot, aes(x = !!sym(size_col), y = cum_area_perc, colour = !!sym(category_col))) +
+  
+  geom_step(direction = "vh", linewidth = 1) +
+  
+  scale_y_continuous(
+    name = "Cumulative area \n(% of category's area)",
+    labels = scales::percent
+  ) +
+  scale_x_continuous(
+    name = "Area of AWI site (ha)",
+    expand = c(0, 0)
+  ) +
+  coord_cartesian(xlim = c(0, 90)) +
+  
+  scale_colour_manual(
+    values = colors,
+    breaks = names(colors),
+    labels = legend_labels,
+    name = "Category",
+    guide = guide_legend(ncol = n_legend_cols, byrow = TRUE)
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "bottom",
+    legend.key.width = unit(1.2, "lines")
+  )
+}
+
+```
+```{r f_plot_dist_awi_sites, echo=FALSE}
+plot_awi_distribution <- function(data,
+                                  x_var,
+                                  y_var = awi.ha,
+                                  filter_var = NULL,
+                                  filter_val = NULL,
+                                  colours = nucat_colors) {
+  
+  # Optional filtering
+  if (!is.null(filter_var) && !is.null(filter_val)) {
+    data <- data %>%
+      filter({{ filter_var }} %in% filter_val)
+  }
+  
+  # Identify outliers
+  outliers <- data %>%
+    group_by({{ x_var }}) %>%
+    mutate(
+      q1 = quantile({{ y_var }}, 0.25, na.rm = TRUE),
+      q3 = quantile({{ y_var }}, 0.75, na.rm = TRUE),
+      iqr = q3 - q1,
+      outlier = {{ y_var }} < (q1 - 1.5 * iqr) | {{ y_var }} > (q3 + 1.5 * iqr)
+    ) %>%
+    filter(outlier)
+  
+  # Plot
+  ggplot(data, aes(x = {{ x_var }}, y = {{ y_var }}, fill = {{ x_var }})) +
+    geom_jitter(
+      data = outliers,
+      aes(colour = {{ x_var }}),
+      width = 0.3, height = 0,
+      size = 1, alpha = 0.4
+    ) +
+    geom_boxplot(
+      width = 0.1,
+      outlier.shape = NA,
+      fill = "white", colour = "black", size = 0.5
+    ) +
+    scale_fill_manual(values = colours) +
+    scale_colour_manual(values = colours) +
+    scale_x_discrete(name = NA) +
+    scale_y_continuous(name = "Area of AWI site (ha)") +
+    theme_minimal() +
+    labs(title = "Distribution of AWI site areas by category",
+         subtitle = "Boxplot of size area, with outliers as points") +
+    theme(
+      legend.position = "none",
+      axis.text.x = element_text(angle = 310, hjust = 0)
+    )
+}
+
+```
+
+::::::::::::::: panel-tabset
+## High Level Categories
+
+```{r dt_awi_site_size_high_level, echo=FALSE}
+
+# tables
+
+awi_cum_area_high_country <- awi_df %>%
+  group_by(highlvl_SN_OTH, Country ) %>%
+  arrange(awi.ha) %>%
+  mutate(cum_area = cumsum(awi.ha),
+         cum_area_perc = cum_area / sum(awi.ha, na.rm = TRUE)) %>% 
+  summarise(total_area_ha = sum(awi.ha, na.rm = TRUE),
+            n_sites = n(),
+            median_size_ha = median(awi.ha, na.rm = TRUE),
+            mean_size_ha = mean(awi.ha, na.rm = TRUE),
+            site_area_at_25pct_cum_area = awi.ha[min(which(cum_area_perc >= 0.25))],
+            site_area_at_50pct_cum_area = awi.ha[min(which(cum_area_perc >= 0.5))],
+            site_area_at_75pct_cum_area = awi.ha[min(which(cum_area_perc >= 0.75))],
+            
+            percentage_sites_under_3ha = 100 * sum(awi.ha < 3, na.rm = TRUE) / n(),
+            percentage_sites_under_10ha = 100 * sum(awi.ha < 10, na.rm = TRUE) / n(),
+            percentage_sites_under_20ha = 100 * sum(awi.ha < 20, na.rm = TRUE) / n(),
+            percentage_sites_under_50ha = 100 * sum(awi.ha < 50, na.rm = TRUE) / n(),
+            
+            # percentage of area within sites 
+            per_area_under_3ha = 100 * sum(awi.ha[awi.ha < 3], na.rm = TRUE) / sum(awi.ha, na.rm = TRUE),
+            per_area_under_10ha = 100 * sum(awi.ha[awi.ha < 10], na.rm = TRUE) / sum(awi.ha, na.rm = TRUE),
+            per_area_under_20ha = 100 * sum(awi.ha[awi.ha < 20], na.rm = TRUE) / sum(awi.ha, na.rm = TRUE),
+            per_area_under_50ha = 100 * sum(awi.ha[awi.ha < 50], na.rm = TRUE) / sum(awi.ha, na.rm = TRUE)
+
+  )
+
+awi_cum_area_high_uk <- awi_df %>%
+    group_by(highlvl_SN_OTH ) %>%
+    arrange(awi.ha) %>%
+    mutate(cum_area = cumsum(awi.ha),
+           cum_area_perc = cum_area / sum(awi.ha, na.rm = TRUE)) %>% 
+  summarise(total_area_ha = sum(awi.ha, na.rm = TRUE),
+            n_sites = n(),
+            median_size_ha = median(awi.ha, na.rm = TRUE),
+            mean_size_ha = mean(awi.ha, na.rm = TRUE),
+            site_area_at_25pct_cum_area = awi.ha[min(which(cum_area_perc >= 0.25))],
+            site_area_at_50pct_cum_area = awi.ha[min(which(cum_area_perc >= 0.5))],
+            site_area_at_75pct_cum_area = awi.ha[min(which(cum_area_perc >= 0.75))],
+            
+            percentage_sites_under_3ha = 100 * sum(awi.ha < 3, na.rm = TRUE) / n(),
+            percentage_sites_under_10ha = 100 * sum(awi.ha < 10, na.rm = TRUE) / n(),
+            percentage_sites_under_20ha = 100 * sum(awi.ha < 20, na.rm = TRUE) / n(),
+            percentage_sites_under_50ha = 100 * sum(awi.ha < 50, na.rm = TRUE) / n(),
+            
+            # percentage of area within sites 
+            per_area_under_3ha = 100 * sum(awi.ha[awi.ha < 3], na.rm = TRUE) / sum(awi.ha, na.rm = TRUE),
+            per_area_under_10ha = 100 * sum(awi.ha[awi.ha < 10], na.rm = TRUE) / sum(awi.ha, na.rm = TRUE),
+            per_area_under_20ha = 100 * sum(awi.ha[awi.ha < 20], na.rm = TRUE) / sum(awi.ha, na.rm = TRUE),
+            per_area_under_50ha = 100 * sum(awi.ha[awi.ha < 50], na.rm = TRUE) / sum(awi.ha, na.rm = TRUE)
+
+  ) %>% 
+  mutate(Country = "UK")
+
+awi_cum_area_high_all <-  awi_cum_area_high_country %>% 
+  rbind(awi_cum_area_high_uk)
+
+awi_cum_area_high_all %>%
+  select(highlvl_SN_OTH, Country, n_sites, mean_size_ha, median_size_ha, 
+         site_area_at_25pct_cum_area, site_area_at_50pct_cum_area , site_area_at_75pct_cum_area, 
+         percentage_sites_under_3ha, percentage_sites_under_10ha, percentage_sites_under_20ha, percentage_sites_under_50ha, 
+         per_area_under_3ha, per_area_under_10ha, per_area_under_20ha, per_area_under_50ha,
+         total_area_ha) %>%
+  rename(Category = highlvl_SN_OTH,
+         Country = Country,
+         'Median area (ha)' = median_size_ha,
+         'Mean area (ha)' = mean_size_ha,
+         '% of sites < 3ha' = percentage_sites_under_3ha,
+         '% of sites < 10ha' = percentage_sites_under_10ha,
+         '% of sites < 20ha' = percentage_sites_under_20ha,
+         '% of sites < 50ha' = percentage_sites_under_50ha,
+         'Number of sites' = n_sites,
+         'Total Area (ha)' = total_area_ha,
+         '% of total area in sites < 3ha' = per_area_under_3ha,
+         '% of total area in sites < 10ha' = per_area_under_10ha,
+         '% of total area in sites < 20ha' = per_area_under_20ha,
+         '% of total area in sites < 50ha' = per_area_under_50ha,
+         'Site size at 25% cumulative area (ha)' = site_area_at_25pct_cum_area,
+         'Site size at 50% cumulative area (ha)' = site_area_at_50pct_cum_area,
+         'Site size at 75% cumulative area (ha)' = site_area_at_75pct_cum_area, 
+         'Total area (ha)' = total_area_ha
+         ) %>%
+  # round numeric columns
+  mutate(across(where(is.numeric), round, digits = 1)) %>%
+  datatable(
+    caption = "Size of AWI sites by high level category and country",
+    extensions = 'Buttons', 
+    options = list(
+      dom = 'Bfrtip',
+      buttons = list('copy', 'excel'),
+      paging = FALSE,  # Disable pagination
+      scrollY = "400px",  # Enable scrolling
+      scrollX = TRUE,
+      scrollCollapse = TRUE,
+      autoWidth = TRUE,
+      searching = TRUE,  # Enable search/filter
+      ordering = TRUE,  # Enable sorting
+      pageLength = 10,  # Rows per page
+      lengthMenu = c(20, 50, 100)  # Rows per page options
+    )
+  )
+
+```
+
+:::::::: panel-tabset
+### All UK
+
+::: panel-tabset
+
+#### Site size distribution
+
+```{r fig_awi_site_size_high_level_boxplot}
+plot_awi_distribution(data = awi, x_var = highlvl_SN_OTH, y_var = awi.ha, colours = high_colors)
+```
+
+#### By number of sites
+
+```{r fig_awi_site_size_high_level}
+f_cum_dens_awi_sites(awi.data = awi, category_col = "highlvl_SN_OTH", size_col = "awi.ha", colors = high_colors)
+```
+
+Unknown AWI types are typically much smaller, and are nearly always from Wales.
+
+#### By cumulative area
+
+```{r fig_awi_site_size_high_level_area}
+f_cum_dens_awi_area(awi.data = awi, category_col = "highlvl_SN_OTH", size_col = "awi.ha", colors = high_colors)
+```
+:::
+
+### England
+
+::: panel-tabset
+
+#### Site size distribution
+
+```{r fig_awi_site_size_high_level_boxplot_england}
+plot_awi_distribution(data = awi %>% filter(Country == "England"), x_var = highlvl_SN_OTH, y_var = awi.ha, colours = high_colors)
+```
+
+#### By number of sites
+
+```{r fig_awi_site_size_high_level_england}
+f_cum_dens_awi_sites(awi.data = awi %>% filter(Country == "England"), category_col = "highlvl_SN_OTH", size_col = "awi.ha", colors = high_colors)
+```
+
+In England, Semi-natural AWI sites are typically smaller than "Other" AWI sites (PAWS).
+
+#### By cumulative area
+
+```{r fig_awi_site_size_high_level_area_england}
+f_cum_dens_awi_area(awi.data = awi %>% filter(Country == "England"), category_col = "highlvl_SN_OTH", size_col = "awi.ha", colors = high_colors)
+```
+:::
+
+### N. Ireland
+
+::: panel-tabset
+#### Site size distribution
+
+```{r fig_awi_site_size_high_level_boxplot_ni}
+plot_awi_distribution(data = awi %>% filter(Country == "N.Ireland"), x_var = highlvl_SN_OTH, y_var = awi.ha, colours = high_colors)
+```
+   
+#### By number of sites
+
+```{r fig_awi_site_size_high_level_ni}
+f_cum_dens_awi_sites(awi.data = awi %>% filter(Country == "N.Ireland"), category_col = "highlvl_SN_OTH", size_col = "awi.ha", colors = high_colors)
+```
+
+In N. Ireland unknown sites (of which there are few) are generally larger than the other categories.
+
+#### By cumulative area
+
+```{r fig_awi_site_size_high_level_area_ni}
+f_cum_dens_awi_area(awi.data = awi %>% filter(Country == "N.Ireland"), category_col = "highlvl_SN_OTH", size_col = "awi.ha", colors = high_colors)
+```
+:::
+
+### Scotland
+
+::: panel-tabset
+#### Site size distribution
+
+```{r fig_awi_site_size_high_level_boxplot_scotland}
+plot_awi_distribution(data = awi %>% filter(Country == "Scotland"), x_var = highlvl_SN_OTH, y_var = awi.ha, colours = high_colors)
+```
+
+#### By number of sites
+
+```{r fig_awi_site_size_high_level_scotland}
+f_cum_dens_awi_sites(awi.data = awi %>% filter(Country == "Scotland"), category_col = "highlvl_SN_OTH", size_col = "awi.ha", colors = high_colors)
+```
+
+#### By cumulative area
+
+```{r fig_awi_site_size_high_level_area_scotland}
+f_cum_dens_awi_area(awi.data = awi %>% filter(Country == "Scotland"), category_col = "highlvl_SN_OTH", size_col = "awi.ha", colors = high_colors)
+```
+:::
+
+### Wales
+
+::: panel-tabset
+#### Site size distribution
+
+```{r fig_awi_site_size_high_level_boxplot_wales}
+plot_awi_distribution(data = awi %>% filter(Country == "Wales"), x_var = highlvl_SN_OTH, y_var = awi.ha, colours = high_colors)
+```
+
+#### By number of sites
+
+```{r fig_awi_site_size_high_level_wales}
+f_cum_dens_awi_sites(awi.data = awi %>% filter(Country == "Wales"), category_col = "highlvl_SN_OTH", size_col = "awi.ha", colors = high_colors)
+```
+
+#### By cumulative area
+
+```{r fig_awi_site_size_high_level_area_wales}
+f_cum_dens_awi_area(awi.data = awi %>% filter(Country == "Wales"), category_col = "highlvl_SN_OTH", size_col = "awi.ha", colors = high_colors)
+```
+:::
+::::::::
+
+## Detailed Categories
+
+```{r dt_awi_site_size_nucat, echo=FALSE}
+
+awi_cum_area_nucat_country <- awi_df %>%
+  group_by(nu_cat, Country ) %>%
+  arrange(awi.ha) %>%
+  mutate(cum_area = cumsum(awi.ha),
+         cum_area_perc = cum_area / sum(awi.ha, na.rm = TRUE)) %>% 
+  summarise(total_area_ha = sum(awi.ha, na.rm = TRUE),
+            n_sites = n(),
+            median_size_ha = median(awi.ha, na.rm = TRUE),
+            mean_size_ha = mean(awi.ha, na.rm = TRUE),
+            site_area_at_25pct_cum_area = awi.ha[min(which(cum_area_perc >= 0.25))],
+            site_area_at_50pct_cum_area = awi.ha[min(which(cum_area_perc >= 0.5))],
+            site_area_at_75pct_cum_area = awi.ha[min(which(cum_area_perc >= 0.75))],
+            
+            percentage_sites_under_3ha = 100 * sum(awi.ha < 3, na.rm = TRUE) / n(),
+            percentage_sites_under_10ha = 100 * sum(awi.ha < 10, na.rm = TRUE) / n(),
+            percentage_sites_under_20ha = 100 * sum(awi.ha < 20, na.rm = TRUE) / n(),
+            percentage_sites_under_50ha = 100 * sum(awi.ha < 50, na.rm = TRUE) / n(),
+            # percentage of area within sites 
+            per_area_under_3ha = 100 * sum(awi.ha[awi.ha < 3], na.rm = TRUE) / sum(awi.ha, na.rm = TRUE),
+            per_area_under_10ha = 100 * sum(awi.ha[awi.ha < 10], na.rm = TRUE) / sum(awi.ha, na.rm = TRUE),
+            per_area_under_20ha = 100 * sum(awi.ha[awi.ha < 20], na.rm = TRUE) / sum(awi.ha, na.rm = TRUE),
+            per_area_under_50ha = 100 * sum(awi.ha[awi.ha < 50], na.rm = TRUE) / sum(awi.ha, na.rm = TRUE)
+            
+  )
+
+awi_cum_area_nucat_uk <- awi_df %>%
+  group_by(nu_cat ) %>%
+  arrange(awi.ha) %>%
+  mutate(cum_area = cumsum(awi.ha),
+         cum_area_perc = cum_area / sum(awi.ha, na.rm = TRUE)) %>% 
+  summarise(total_area_ha = sum(awi.ha, na.rm = TRUE),
+            n_sites = n(),
+            median_size_ha = median(awi.ha, na.rm = TRUE),
+            mean_size_ha = mean(awi.ha, na.rm = TRUE),
+            site_area_at_25pct_cum_area = awi.ha[min(which(cum_area_perc >= 0.25))],
+            site_area_at_50pct_cum_area = awi.ha[min(which(cum_area_perc >= 0.5))],
+            site_area_at_75pct_cum_area = awi.ha[min(which(cum_area_perc >= 0.75))],
+
+            percentage_sites_under_3ha = 100 * sum(awi.ha < 3, na.rm = TRUE) / n(),
+            percentage_sites_under_10ha = 100 * sum(awi.ha < 10, na.rm = TRUE) / n(),
+            percentage_sites_under_20ha = 100 * sum(awi.ha < 20, na.rm = TRUE) / n(),
+            percentage_sites_under_50ha = 100 * sum(awi.ha < 50, na.rm = TRUE) / n(),
+            
+            # percentage of area within sites 
+            per_area_under_3ha = 100 * sum(awi.ha[awi.ha < 3], na.rm = TRUE) / sum(awi.ha, na.rm = TRUE),
+            per_area_under_10ha = 100 * sum(awi.ha[awi.ha < 10], na.rm = TRUE) / sum(awi.ha, na.rm = TRUE),
+            per_area_under_20ha = 100 * sum(awi.ha[awi.ha < 20], na.rm = TRUE) / sum(awi.ha, na.rm = TRUE),
+            per_area_under_50ha = 100 * sum(awi.ha[awi.ha < 50], na.rm = TRUE) / sum(awi.ha, na.rm = TRUE)
+            
+  ) %>% 
+  mutate(Country = "UK")
+
+awi_cum_area_nucat_all <-  awi_cum_area_nucat_country %>%
+  rbind(awi_cum_area_nucat_uk) %>% 
+  arrange(factor(nu_cat, levels = c(constants$nucat_levels, "All AWI categories")))
+
+awi_cum_area_nucat_all %>%
+  select(nu_cat, Country, n_sites, mean_size_ha, median_size_ha, 
+         site_area_at_25pct_cum_area, site_area_at_50pct_cum_area , site_area_at_75pct_cum_area, 
+         percentage_sites_under_3ha, percentage_sites_under_10ha, percentage_sites_under_20ha, percentage_sites_under_50ha,
+         per_area_under_3ha, per_area_under_10ha, per_area_under_20ha, per_area_under_50ha,
+         total_area_ha) %>%
+  rename(Category = nu_cat,
+         Country = Country,
+         'Median area (ha)' = median_size_ha,
+         'Mean area (ha)' = mean_size_ha,
+         '% of sites < 3ha' = percentage_sites_under_3ha,
+         '% of sites < 10ha' = percentage_sites_under_10ha,
+         '% of sites < 20ha' = percentage_sites_under_20ha,
+         '% of sites < 50ha' = percentage_sites_under_50ha,
+         'Number of sites' = n_sites,
+         'Total Area (ha)' = total_area_ha,
+         '% of total area in sites < 3ha' = per_area_under_3ha,
+         '% of total area in sites < 10ha' = per_area_under_10ha,
+         '% of total area in sites < 20ha' = per_area_under_20ha,
+         '% of total area in sites < 50ha' = per_area_under_50ha,
+         'Site size at 25% cumulative area (ha)' = site_area_at_25pct_cum_area,
+         'Site size at 50% cumulative area (ha)' = site_area_at_50pct_cum_area,
+         'Site size at 75% cumulative area (ha)' = site_area_at_75pct_cum_area, 
+         'Total area (ha)' = total_area_ha
+         ) %>%
+  # round numeric columns
+  mutate(across(where(is.numeric), round, digits = 1)) %>%
+  datatable(
+    caption = "Size of AWI sites by detailed category and country",
+    extensions = 'Buttons',
+    options = list(
+      dom = 'Bfrtip',
+      buttons = list('copy', 'excel'),
+      paging = FALSE,  # Disable pagination
+      scrollY = "400px",  # Enable scrolling
+      scrollX = TRUE,
+      scrollCollapse = TRUE,
+      autoWidth = TRUE,
+      searching = TRUE,  # Enable search/filter
+      ordering = TRUE,  # Enable sorting
+      pageLength = 10,  # Rows per page
+      lengthMenu = c(20, 50, 100)  # Rows per page options
+    )
+  )
+
+```
+
+:::::::: panel-tabset
+### All UK
+
+::: panel-tabset
+#### Site size distribution
+
+```{r fig_awi_site_size_nucat_boxplot}
+plot_awi_distribution(data = awi, x_var = nu_cat, y_var = awi.ha, colours = nucat_colors)
+```
+
+#### By number of sites
+
+```{r fig_awi_site_size_nucat}
+
+f_cum_dens_awi_sites(awi.data = awi, category_col = "nu_cat", size_col = "awi.ha", colors = nucat_colors)
+```
+
+#### By cumulative area
+
+```{r fig_awi_site_size_nucat_area}
+f_cum_dens_awi_area(awi.data = awi, category_col = "nu_cat", size_col = "awi.ha", colors = nucat_colors)
+```
+
+:::
+
+### England
+
+::: panel-tabset
+#### Site size distribution
+
+```{r fig_awi_site_size_nucat_boxplot_england}
+plot_awi_distribution(data = awi %>% filter(Country == "England"), x_var = nu_cat, y_var = awi.ha, colours = nucat_colors)
+```
+
+#### By number of sites
+
+```{r fig_awi_site_size_nucat_england}
+f_cum_dens_awi_sites(awi.data = awi %>% filter(Country == "England"), category_col = "nu_cat", size_col = "awi.ha", colors = nucat_colors)
+```
+
+#### By cumulative area
+
+```{r fig_awi_site_size_nucat_area_england}
+f_cum_dens_awi_area(awi.data = awi %>% filter(Country == "England"), category_col = "nu_cat", size_col = "awi.ha", colors = nucat_colors)
+```
+:::
+
+### N. Ireland
+
+::: panel-tabset
+#### Site size distribution
+
+```{r fig_awi_site_size_nucat_boxplot_ni}
+plot_awi_distribution(data = awi %>% filter(Country == "N.Ireland"), x_var = nu_cat, y_var = awi.ha, colours = nucat_colors)
+```
+
+#### By number of sites
+
+```{r fig_awi_site_size_nucat_ni}
+f_cum_dens_awi_sites(awi.data = awi %>% filter(Country == "N.Ireland"), category_col = "nu_cat", size_col = "awi.ha", colors = nucat_colors)
+```
+
+#### By cumulative area
+
+```{r fig_awi_site_size_nucat_area_ni}
+f_cum_dens_awi_area(awi.data = awi %>% filter(Country == "N.Ireland"), category_col = "nu_cat", size_col = "awi.ha", colors = nucat_colors)
+```
+:::
+
+### Scotland
+
+::: panel-tabset
+#### Site size distribution
+
+```{r fig_awi_site_size_nucat_boxplot_scotland}
+plot_awi_distribution(data = awi %>% filter(Country == "Scotland"), x_var = nu_cat, y_var = awi.ha, colours = nucat_colors)
+```
+
+#### By number of sites
+
+```{r fig_awi_site_size_nucat_scotland}
+f_cum_dens_awi_sites(awi.data = awi %>% filter(Country == "Scotland"), category_col = "nu_cat", size_col = "awi.ha", colors = nucat_colors)
+```
+
+#### By cumulative area
+
+```{r fig_awi_site_size_nucat_area_scotland}
+f_cum_dens_awi_area(awi.data = awi %>% filter(Country == "Scotland"), category_col = "nu_cat", size_col = "awi.ha", colors = nucat_colors)
+```
+:::
+
+### Wales
+
+::: panel-tabset
+#### Site size distribution
+
+```{r fig_awi_site_size_nucat_boxplot_wales}
+plot_awi_distribution(data = awi %>% filter(Country == "Wales"), x_var = nu_cat, y_var = awi.ha, colours = nucat_colors)
+```
+
+#### By number of sites
+
+```{r fig_awi_site_size_nucat_wales}
+f_cum_dens_awi_sites(awi.data = awi %>% filter(Country == "Wales"), category_col = "nu_cat", size_col = "awi.ha", colors = nucat_colors)
+```
+
+#### By cumulative area
+
+```{r fig_awi_site_size_nucat_area_wales}
+f_cum_dens_awi_area(awi.data = awi %>% filter(Country == "Wales"), category_col = "nu_cat", size_col = "awi.ha", colors = nucat_colors)
+```
+:::
+::::::::
+:::::::::::::::
+
+## Where are the bigger AW sites?
+
+```{r f_plot_point_map_size}
+awi_centroids <- awi %>% 
+  st_centroid() 
+
+f_plot_awi_centroids_biggerthan <- function(size_threshold, category_col, colors) {
+
+  plotdf <- awi_centroids %>% 
+    filter(awi.ha > size_threshold)
+
+  map.ploter(
+    fillground = plotdf,
+    to.plot = category_col,      # <- use the argument
+    fill.scale.title = "AWI category",
+    main.title = "Ancient Woodland Inventory",
+    sub.title = paste("Sites >", size_threshold, "ha"),
+    background = countries0,
+    geom_type = "point",
+    categorical = TRUE,
+    colours = colors,            # <- use the argument
+    background.fill = "grey90",
+    background.size = 0.05,
+    point.size = 0.6,
+    point.alpha = 0.7,
+    background.colour = "black"
+  )
+}
+
+
+```
+
+
+::: panel-tabset
+
+## Sites > 3 ha
+```{r}
+f_plot_awi_centroids_biggerthan(size_threshold = 3, category_col = "nu_cat", colors = nucat_colors)
+```
+
+## Sites > 10 ha
+```{r}
+f_plot_awi_centroids_biggerthan(size_threshold = 10, category_col = "nu_cat", colors = nucat_colors)
+```
+
+## Sites > 50 ha
+```{r}
+f_plot_awi_centroids_biggerthan(size_threshold = 50, category_col = "nu_cat", colors = nucat_colors)
+```
+
+## Sites > 100 ha
+```{r}
+f_plot_awi_centroids_biggerthan(size_threshold = 100, category_col = "nu_cat", colors = nucat_colors)
+```
+
+:::
+
+
