@@ -2,17 +2,17 @@
 .Rhistory
 .RData
 .Ruserdata
-Data
-Outputs
-AW extent exploration.html
-AW extent exploration01.html
-AW extent exploration02.html
-AW-extent-exploration_cache
-AW-extent-exploration_files
-figures
-images
+
+Data/
+Outputs/
+
+figures/
+images/
+
 _site/
 site_libs/
+
 *.html
+
 /.quarto/
 **/*.quarto_ipynb
